@@ -1,0 +1,13 @@
+# LangChain 核心依赖
+langchain>=0.3,<0.4
+langchain-core>=0.3,<0.4
+langgraph>=0.4.3,<0.5
+
+# 沙箱依赖
+langchain-sandbox>=0.0.6
+
+# LLM 提供商（OpenAI 兼容接口 - 阿里云百炼）
+langchain-openai>=0.3,<0.4
+
+# 环境变量加载
+python-dotenv>=1.0,<2.0

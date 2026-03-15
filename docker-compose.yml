@@ -1,0 +1,25 @@
+services:
+  sandbox:
+    build: .
+    volumes:
+      - .:/app
+      - ./logs:/app/logs   # 确保 logs/ 目录实时挂载到宿主机
+    working_dir: /app
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1  # 禁用 Python 输出缓冲，日志实时刷入终端
+    env_file:
+      - .env
+    stdin_open: true
+    tty: true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"   # 单次实验通常 < 5MB，留足余量
+        max-file: "3"
+    networks:
+      - sandbox-network
+
+networks:
+  sandbox-network:
+    driver: bridge

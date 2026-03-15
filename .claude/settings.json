@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker-compose run:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(jq -r '.results[] | \"\"Task: \\\\\\(.task[:40]\\)... | Return: \\\\\\(.return_code\\) | Duration: \\\\\\(.duration_seconds\\)s\"\"' logs/baseline_20260314_172926__subset5.json)",
+      "Bash(python3 -c \":*)",
+      "Bash(jq -r '.results[] | \"\"Task: \\\\\\(.task[:40]\\)... | Return: \\\\\\(.return_code\\) | Duration: \\\\\\(.duration_seconds\\)s\"\"' logs/context_mode_subset5_20260314_181129.json)"
+    ]
+  }
+}
