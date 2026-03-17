@@ -123,6 +123,57 @@ if not api_key:
     sys.exit(0)
 ```
 
+## 调试技巧
+
+### 启用详细日志
+
+```python
+agent = SandboxAgent(
+    llm=llm,
+    sandbox=sandbox,
+    index_store=store,
+    max_executions=10,
+    total_timeout_seconds=60,
+    verbose=True,  # 打印诊断日志
+)
+```
+
+### 检查执行记录
+
+```python
+result = await agent.run("计算 1+1")
+print(f"执行次数: {result.execution_count}")
+print(f"停止原因: {result.stop_reason}")
+print(f"是否被限制: {result.stopped_by_limit}")
+
+record = agent.get_execution_record(result.last_execution_id)
+print(record.stdout)
+print(record.stderr)
+```
+
+### 手动测试 LLM 连接
+
+```python
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="qwen-plus",
+    api_key="sk-xxx",
+    base_url="https://dashscope.aliyun.com/compatible-mode/v1",
+)
+response = llm.invoke([{"role": "user", "content": "Hello"}])
+print(response.content)
+```
+
+### 测试多 tool_calls 场景
+
+```python
+# 测试单轮多 tool_calls
+result = await agent.run("同时计算 1+1 和 2+2")
+# 如果 LLM 返回两个 tool_calls，execution_count 应为 2
+print(f"执行次数: {result.execution_count}")
+```
+
 ## CI/CD 建议
 
 在持续集成中运行：

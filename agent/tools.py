@@ -13,6 +13,27 @@ from pathlib import Path
 from agent.schemas import ToolResult
 from agent.index_store import IndexStore, InMemoryIndexStore
 
+# Phase 1: fetch_execution_detail 调用计数器（用于评估上下文压缩效果）
+_fetch_execution_detail_call_count: int = 0
+
+
+def get_fetch_execution_detail_call_count() -> int:
+    """获取 fetch_execution_detail 被调用次数"""
+    global _fetch_execution_detail_call_count
+    return _fetch_execution_detail_call_count
+
+
+def reset_fetch_execution_detail_call_count() -> None:
+    """重置 fetch_execution_detail 调用计数器"""
+    global _fetch_execution_detail_call_count
+    _fetch_execution_detail_call_count = 0
+
+
+def increment_fetch_execution_detail_call_count() -> None:
+    """增加 fetch_execution_detail 调用计数器"""
+    global _fetch_execution_detail_call_count
+    _fetch_execution_detail_call_count += 1
+
 
 class SandboxProtocol(Protocol):
     """沙箱接口协议，用于依赖注入"""
@@ -311,6 +332,11 @@ def fetch_execution_detail(
     fallback_execution_id: Optional[str] = None,
     max_chars: int = 4000,
 ) -> ToolResult:
+    """
+    查询完整执行记录详情（供 Agent 按需调用）
+    """
+    # Phase 1: 增加调用计数器
+    increment_fetch_execution_detail_call_count()
     """
     查询完整执行记录详情（供 Agent 按需调用）
 

@@ -2,48 +2,8 @@
 
 开发和使用过程中可能遇到的问题及解决方案。
 
-## 关键实现注意事项
-
-### InMemoryIndexStore Boolean Evaluation
-
-**⚠️ Important**: `InMemoryIndexStore` defines `__len__`, so empty stores evaluate to `False`:
-
-```python
-# WRONG - creates new instance when store is empty
-self.index_store = index_store or InMemoryIndexStore()
-
-# CORRECT
-self.index_store = index_store if index_store is not None else InMemoryIndexStore()
-```
-
-### LLM Tool Binding
-
-LLM must bind tools to trigger tool calls:
-
-```python
-from langchain_openai import ChatOpenAI
-from langchain_core.tools import StructuredTool
-
-tool = StructuredTool.from_function(...)
-
-llm = ChatOpenAI(
-    model="qwen-plus",
-    api_key=api_key,
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-).bind_tools([tool])  # REQUIRED
-```
-
-### FixedPyodideSandbox
-
-Always use `FixedPyodideSandbox` instead of raw `PyodideSandbox` to fix newline loss:
-
-```python
-from sandbox_wrapper import FixedPyodideSandbox
-
-sandbox = FixedPyodideSandbox(allow_net=True)
-```
-
----
+> 关于关键实现注意事项，详见 [agent-system.md](./agent-system.md#关键实现注意事项)
+> 关于调试技巧，详见 [testing.md](./testing.md#调试技巧)
 
 ## 配置问题
 
@@ -73,22 +33,6 @@ pip install -r requirements.txt
 ```
 
 ## 运行时问题
-
-### InMemoryIndexStore 布尔判断错误
-
-**症状**：传入的 index_store 被忽略，创建了新的空实例
-
-**原因**：`InMemoryIndexStore` 定义了 `__len__`，空存储在布尔上下文为 `False`
-
-**解决**：使用 `is not None` 判断
-
-```python
-# 错误
-self.index_store = index_store or InMemoryIndexStore()
-
-# 正确
-self.index_store = index_store if index_store is not None else InMemoryIndexStore()
-```
 
 ### 工具调用未触发
 
@@ -214,68 +158,3 @@ pip install langgraph
 **原因**：finalizer 节点未正确执行或状态未正确传递
 
 **解决**：检查 workflow.py 中 finalizer 节点是否正确添加到 StateGraph
-
-## 调试技巧
-
-### 启用详细日志
-
-```python
-agent = SandboxAgent(
-    llm=llm,
-    sandbox=sandbox,
-    index_store=store,
-    max_executions=10,
-    total_timeout_seconds=60,
-    verbose=True,  # 打印诊断日志
-)
-```
-
-### 检查执行记录
-
-```python
-result = await agent.run("计算 1+1")
-print(f"执行次数: {result.execution_count}")
-print(f"停止原因: {result.stop_reason}")
-print(f"是否被限制: {result.stopped_by_limit}")
-
-record = agent.get_execution_record(result.last_execution_id)
-print(record.stdout)
-print(record.stderr)
-```
-
-### 手动测试 LLM 连接
-
-```python
-from langchain_openai import ChatOpenAI
-
-llm = ChatOpenAI(
-    model="qwen-plus",
-    api_key="sk-xxx",
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-)
-response = llm.invoke([{"role": "user", "content": "Hello"}])
-print(response.content)
-```
-
-### 测试多 tool_calls 场景
-
-```python
-# 测试单轮多 tool_calls
-result = await agent.run("同时计算 1+1 和 2+2")
-# 如果 LLM 返回两个 tool_calls，execution_count 应为 2
-print(f"执行次数: {result.execution_count}")
-```
-
----
-
-## Known Issues
-
-1. **Newline Loss**: `@langchain/pyodide-sandbox` uses `join('')` instead of `join('\n')`
-   - **Fix**: Use `FixedPyodideSandbox`
-
-2. **Stateful Mode Slow**: ~3.3s vs ~1.5s for stateless
-   - **Reason**: Pyodide re-initialization
-   - **Fix**: Use stateless unless variable persistence needed
-
-3. **IndexStore Boolean**: Empty `InMemoryIndexStore` is falsy
-   - **Fix**: Use `is not None` check

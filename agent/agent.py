@@ -14,6 +14,7 @@ from agent.schemas import AgentState
 from agent.index_store import IndexStore, InMemoryIndexStore, NoOpIndexStore
 from agent.prompts import PromptBuilder
 from agent.workflow import create_simple_workflow
+from agent.tools import reset_fetch_execution_detail_call_count
 
 
 @dataclass
@@ -32,6 +33,13 @@ class AgentResult:
     elapsed_seconds: float = 0.0
     tool_metrics: list[dict] | None = None
     round_token_history: list[dict] | None = None
+    # Phase 1: 新增用户体验度量字段
+    first_token_latency_ms: float = 0.0  # 首 Token 延迟（毫秒）
+    per_round_llm_latency: list[float] | None = None  # 每轮 LLM 调用耗时（秒）
+    per_round_tool_latency: list[float] | None = None  # 每轮工具执行耗时（秒）
+    compression_ratio: float = 0.0  # 消息压缩前后 Token 比
+    fetch_hit_count: int = 0  # fetch_execution_detail 被调用次数
+    task_success: bool = False  # 是否正常收敛（stop_reason == "no_tool_calls"）
 
 
 class SandboxAgent:
@@ -64,6 +72,7 @@ class SandboxAgent:
         summary_max_chars: int = 2000,
         verbose: bool = True,
         has_fetch_tool: Optional[bool] = None,
+        custom_system_prompt: Optional[str] = None,
     ):
         """
         初始化 Agent
@@ -78,6 +87,7 @@ class SandboxAgent:
             tool_timeout_seconds: 单个工具执行超时（秒），默认 15 秒
             summary_max_chars: 执行结果摘要最大字符数，默认 2000
             verbose: 是否打印诊断日志
+            custom_system_prompt: 自定义 system prompt（SDK Builder 用），为 None 时使用默认
         """
         self.llm = llm
         self.sandbox = sandbox
@@ -88,6 +98,7 @@ class SandboxAgent:
         self.tool_timeout_seconds = tool_timeout_seconds
         self.summary_max_chars = summary_max_chars
         self.verbose = verbose
+        self.custom_system_prompt = custom_system_prompt
 
         # compress_mode：非 NoOpIndexStore 即启用消息压缩和历史摘要注入
         self.compress_mode = not isinstance(self.index_store, NoOpIndexStore)
@@ -121,8 +132,14 @@ class SandboxAgent:
         Returns:
             AgentResult: 包含 answer、execution_count、last_execution_id、stop_reason 等
         """
+        # Phase 1: 重置 fetch_execution_detail 调用计数器
+        reset_fetch_execution_detail_call_count()
+
         # 构造初始状态
-        system_prompt = PromptBuilder.build_system_prompt(context_mode=self.has_fetch_tool)
+        if self.custom_system_prompt:
+            system_prompt = self.custom_system_prompt
+        else:
+            system_prompt = PromptBuilder.build_system_prompt(context_mode=self.has_fetch_tool)
         initial_state: AgentState = {
             "messages": [
                 SystemMessage(content=system_prompt),
@@ -144,6 +161,12 @@ class SandboxAgent:
             "elapsed_seconds": 0.0,
             "tool_metrics": [],
             "round_token_history": [],
+            # Phase 1: 初始化用户体验度量字段
+            "per_round_llm_latency": [],
+            "per_round_tool_latency": [],
+            "compression_ratio": 0.0,
+            "fetch_hit_count": 0,
+            "last_compressed_message_count": 0,
         }
 
         # 执行工作流
@@ -162,6 +185,11 @@ class SandboxAgent:
         elapsed_seconds = final_state.get("elapsed_seconds", 0.0)
         tool_metrics = final_state.get("tool_metrics", [])
         round_token_history = final_state.get("round_token_history", [])
+        # Phase 1: 提取新增的用户体验度量字段
+        per_round_llm_latency = final_state.get("per_round_llm_latency", [])
+        per_round_tool_latency = final_state.get("per_round_tool_latency", [])
+        compression_ratio = final_state.get("compression_ratio", 0.0)
+        fetch_hit_count = final_state.get("fetch_hit_count", 0)
 
         # 根据 stop_reason 确定 stopped_by_limit
         # total_timeout 和 max_executions 都算作被限制停止
@@ -174,6 +202,9 @@ class SandboxAgent:
                 final_answer = last_message.get("content", "")
             else:
                 final_answer = getattr(last_message, "content", "")
+
+        # Phase 1: 计算 task_success（是否正常收敛）
+        task_success = stop_reason == "no_tool_calls"
 
         return AgentResult(
             answer=final_answer or "",
@@ -189,6 +220,13 @@ class SandboxAgent:
             elapsed_seconds=elapsed_seconds,
             tool_metrics=tool_metrics,
             round_token_history=round_token_history,
+            # Phase 1: 新增用户体验度量字段
+            first_token_latency_ms=0.0,  # 暂时设为 0，后续 streaming 实现后可更新
+            per_round_llm_latency=per_round_llm_latency,
+            per_round_tool_latency=per_round_tool_latency,
+            compression_ratio=compression_ratio,
+            fetch_hit_count=fetch_hit_count,
+            task_success=task_success,
         )
 
     def get_execution_record(self, execution_id: str) -> Optional[Any]:

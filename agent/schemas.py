@@ -36,6 +36,12 @@ class AgentState(TypedDict):
     elapsed_seconds: Optional[float]  # Agent 运行总耗时（秒）
     tool_metrics: Optional[list[dict]]  # 每次工具调用的观测指标
     round_token_history: Optional[list[dict]]  # 每轮 LLM 调用的 token 记录
+    # Phase 1: 新增用户体验度量字段
+    per_round_llm_latency: Optional[list[float]]  # 每轮 LLM 调用耗时（秒）
+    per_round_tool_latency: Optional[list[float]]  # 每轮工具执行耗时（秒）
+    compression_ratio: Optional[float]  # 消息压缩前后 Token 比
+    fetch_hit_count: Optional[int]  # fetch_execution_detail 被调用次数
+    last_compressed_message_count: Optional[int]  # 上次压缩的消息数量（用于计算压缩比）
 
 
 @dataclass

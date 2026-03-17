@@ -22,6 +22,7 @@ from agent.tools import (
 from agent.workflow import create_workflow, create_simple_workflow
 from agent.history_utils import build_execution_summary
 from agent.agent import SandboxAgent, AgentResult
+from agent.builder import AgentBuilder
 
 __all__ = [
     # 数据结构
@@ -47,6 +48,8 @@ __all__ = [
     # Agent
     "SandboxAgent",
     "AgentResult",
+    # SDK Builder
+    "AgentBuilder",
 ]
 
 __version__ = "0.1.0"

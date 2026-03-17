@@ -11,3 +11,12 @@ langchain-openai>=0.3,<0.4
 
 # 环境变量加载
 python-dotenv>=1.0,<2.0
+
+# Phase 1: Eval Dashboard 依赖
+pandas>=2.0,<3.0
+matplotlib>=3.7,<4.0
+numpy>=1.24,<2.0
+
+# Phase 3: Streamlit Dashboard 依赖
+streamlit>=1.30,<2.0
+plotly>=5.18,<6.0

@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
 **LangChain Sandbox Agent** — A context-managed code execution agent built on LangGraph, with sandboxed Python execution via Pyodide (WebAssembly). The project implements and benchmarks three context management strategies (Native/Baseline/Context Mode) to measure token efficiency in multi-round tool-calling workflows.
@@ -23,6 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Component | File | Purpose |
 |-----------|------|---------|
 | `SandboxAgent` | `agent/agent.py` | Public API, orchestration, mode detection |
+| `AgentBuilder` | `agent/builder.py` | SDK Builder Pattern — fluent API for custom Agent construction |
 | `AgentWorkflow` | `agent/workflow.py` | LangGraph StateGraph, node implementations, message compression |
 | Tool implementations | `agent/tools.py` | `execute_python`, `fetch_execution_detail`, `read_file`, `write_file` |
 | `PromptBuilder` | `agent/prompts.py` | System prompt templates (base + context mode) |
@@ -30,7 +29,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | History utils | `agent/history_utils.py` | `build_execution_summary()` for history injection |
 | Data models | `agent/schemas.py` | `AgentState`, `ExecutionRecord`, `ToolResult` |
 | CLI entry | `agent/__main__.py` | Argument parsing, LLM creation, config validation |
-| Experiment runner | `main.py` | Multi-task benchmark harness, 3-mode comparison |
+| Experiment runner | `main.py` | Multi-task benchmark harness, 3-mode + multi-model comparison |
+| Eval Dashboard | `eval_dashboard.ipynb` | Jupyter Notebook — metrics visualization + cross-model comparison |
 
 ## Development Environment
 
@@ -83,15 +83,24 @@ python -m agent "task" --no-index --summary-max-chars 999999  # Native
 python -m agent "task" --no-fetch-tool                         # Baseline
 python -m agent "task"                                         # Context Mode (default)
 
+# Specify model/provider via CLI (overrides env vars)
+python -m agent "task" --model qwen-turbo
+python -m agent "task" --model gpt-4o-mini --base-url https://api.openai.com/v1 --api-key sk-xxx
+
 # Smoke tests
 docker-compose run --rm sandbox python tests/smoke_e2e.py
 docker-compose run --rm sandbox python tests/smoke_phase3_multi_toolcalls.py
 docker-compose run --rm sandbox python tests/smoke_phase3_total_timeout.py
 
 # Run 3-mode experiment
-docker-compose run --rm sandbox python main.py --mode native --task-file experiment_tasks/benchmark_tasks_subset5.txt --log-file logs/native.json
-docker-compose run --rm sandbox python main.py --mode baseline --task-file experiment_tasks/benchmark_tasks_subset5.txt --log-file logs/baseline.json
-docker-compose run --rm sandbox python main.py --mode context_mode --task-file experiment_tasks/benchmark_tasks_subset5.txt --log-file logs/cm.json
+python main.py --mode native --task-file experiment_tasks/benchmark_tasks_subset5.txt --log-file logs/native.json
+python main.py --mode baseline --task-file experiment_tasks/benchmark_tasks_subset5.txt --log-file logs/baseline.json
+python main.py --mode context_mode --task-file experiment_tasks/benchmark_tasks_subset5.txt --log-file logs/cm.json
+
+# Multi-model cross-evaluation
+python main.py --mode context_mode --model qwen-plus  --task-file experiment_tasks/benchmark_tasks_subset5.txt --log-file logs/cm_qwen_plus.json
+python main.py --mode context_mode --model qwen-turbo --task-file experiment_tasks/benchmark_tasks_subset5.txt --log-file logs/cm_qwen_turbo.json
+python main.py --mode context_mode --model gpt-4o-mini --base-url https://api.openai.com/v1 --api-key sk-xxx --task-file ... --log-file logs/cm_gpt4o.json
 ```
 
 ## Key Dependencies
@@ -109,17 +118,20 @@ docker-compose run --rm sandbox python main.py --mode context_mode --task-file e
 my-sandbox-demo/
 ├── agent/                  # Agent core implementation
 │   ├── agent.py           # SandboxAgent — public API & orchestration
+│   ├── builder.py         # AgentBuilder — SDK Builder Pattern (Phase 2)
 │   ├── workflow.py        # LangGraph StateGraph — nodes, edges, compression
 │   ├── tools.py           # Tool implementations + structured error extraction
 │   ├── index_store.py     # InMemoryIndexStore / NoOpIndexStore
 │   ├── schemas.py         # AgentState, ExecutionRecord, ToolResult
 │   ├── prompts.py         # Prompt templates (base + context mode)
 │   ├── history_utils.py   # Execution history summary builder
-│   └── __main__.py        # CLI entry point
-├── main.py                # Experiment runner (3-mode benchmark)
+│   └── __main__.py        # CLI entry point (supports --model/--base-url/--api-key)
+├── main.py                # Experiment runner (3-mode + multi-model benchmark)
+├── eval_dashboard.ipynb   # Eval Dashboard — metrics visualization + cross-model comparison
 ├── experiment_tasks/      # Benchmark task files
-├── logs/                  # Experiment results (JSON)
+├── logs/                  # Experiment results (JSON, includes model field)
 ├── tests/                 # Smoke tests
+├── agent_docs/            # Detailed documentation
 ├── sandbox_wrapper.py     # Pyodide stdout newline fix
 ├── architecture.md        # System architecture diagram
 └── README.md              # Product documentation
@@ -141,6 +153,36 @@ self.compress_mode = not isinstance(self.index_store, NoOpIndexStore)
 self.has_fetch_tool = has_fetch_tool if has_fetch_tool is not None else self.compress_mode
 ```
 
+### Agent SDK (Builder Pattern)
+
+`AgentBuilder` provides a fluent API for constructing custom Agents without touching internals:
+
+```python
+from agent import AgentBuilder, InMemoryIndexStore
+
+agent = (
+    AgentBuilder()
+    .llm(my_llm)                                    # Required
+    .sandbox(my_sandbox)                             # Required
+    .system_prompt("You are a data analyst...")      # Optional custom prompt
+    .index_store(InMemoryIndexStore())               # Optional, enables context compression
+    .max_executions(10)                              # Optional
+    .total_timeout(60)                               # Optional
+    .build()                                         # → SandboxAgent
+)
+result = await agent.run("分析这份数据...")
+```
+
+Key: `SandboxAgent` now accepts an optional `custom_system_prompt` parameter (used by Builder). When set, it overrides the default `PromptBuilder.build_system_prompt()`.
+
+### Multi-Model Evaluation
+
+Both `agent/__main__.py` and `main.py` support `--model`, `--base-url`, `--api-key` CLI arguments.
+
+**Priority**: CLI args > environment variables > defaults.
+
+The experiment JSON log now includes a `"model"` field, and `eval_dashboard.ipynb` auto-detects multiple models to generate cross-model comparison charts (Section 9-10).
+
 ### Known Gotchas
 - `InMemoryIndexStore` evaluates to `False` when empty — always use `is not None` check
 - `FixedPyodideSandbox` is required to fix stdout newline loss in `@langchain/pyodide-sandbox`
@@ -160,10 +202,3 @@ AGENT_TOOL_TIMEOUT_SECONDS=15      # Optional
 AGENT_SUMMARY_MAX_CHARS=500        # Optional
 AGENT_ALLOW_NET=true               # Optional
 ```
-
-## References
-
-- [LangChain Sandbox](https://github.com/langchain-ai/langchain-sandbox)
-- [Pyodide](https://pyodide.org/)
-- [LangGraph](https://langchain-ai.github.io/langgraph/)
-- [Alibaba Cloud DashScope](https://dashscope.aliyun.com/)

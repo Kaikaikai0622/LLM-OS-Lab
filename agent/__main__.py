@@ -70,15 +70,18 @@ def validate_config(args) -> dict:
     if not query:
         errors.append(("query", "不能为空或仅包含空格"))
 
-    # 2. 校验 DASHSCOPE_API_KEY
-    api_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
+    # 2. 校验 API_KEY（CLI --api-key > 环境变量 DASHSCOPE_API_KEY）
+    api_key = (getattr(args, 'api_key', None) or "").strip()
     if not api_key:
-        errors.append(("DASHSCOPE_API_KEY", "未设置，请检查 .env 文件或环境变量"))
+        api_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
+    if not api_key:
+        errors.append(("DASHSCOPE_API_KEY", "未设置，请通过 --api-key 或 .env 文件设置"))
 
-    # 3. 校验 LLM_MODEL
-    model = os.getenv("LLM_MODEL", "").strip()
+    # 3. 校验 LLM_MODEL（CLI --model > 环境变量 LLM_MODEL > 默认值）
+    model = (getattr(args, 'model', None) or "").strip()
     if not model:
-        # 使用默认值
+        model = os.getenv("LLM_MODEL", "").strip()
+    if not model:
         model = "qwen-plus"
 
     # 4. 校验 AGENT_MAX_EXECUTIONS（CLI 参数覆盖环境变量）
@@ -142,7 +145,7 @@ def validate_config(args) -> dict:
         "query": query,
         "api_key": api_key,
         "model": model,
-        "base_url": os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").strip(),
+        "base_url": (getattr(args, 'base_url', None) or "").strip() or os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").strip(),
         "max_executions": max_exec or 10,
         "tool_timeout_seconds": float(timeout or 15),
         "summary_max_chars": summary_chars or 2000,
@@ -344,6 +347,27 @@ async def main():
     )
 
     parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="LLM 模型名称（覆盖环境变量 LLM_MODEL）",
+    )
+
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="LLM API 基础 URL（覆盖环境变量 LLM_BASE_URL）",
+    )
+
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="LLM API Key（覆盖环境变量 DASHSCOPE_API_KEY）",
+    )
+
+    parser.add_argument(
         "--no-index",
         action="store_true",
         help="无索引模式：跳过执行结果存储（AGENT_NO_INDEX=true 等效）",
@@ -428,22 +452,26 @@ async def main():
         print("=" * 50)
         print(result.answer)
 
+        # Phase 1: 准备指标数据
+        idx_mode = 'no-index' if config['no_index'] else ('baseline' if config.get('no_fetch_tool') else 'context-mode')
+        avg_tool_summary_chars = (
+            (sum(m.get("summary_chars", 0) for m in (result.tool_metrics or [])) / len(result.tool_metrics))
+            if result.tool_metrics
+            else 0.0
+        )
+
         logger.info(
             "event=agent_complete execution_count=%s stop_reason=%s index_mode=%s llm_prompt_tokens=%s llm_completion_tokens=%s llm_total_tokens=%s max_prompt_tokens=%s elapsed_seconds=%.3f tool_calls=%s avg_tool_summary_chars=%.1f",
             result.execution_count,
             result.stop_reason,
-            "no-index" if config["no_index"] else "in-memory",
+            idx_mode,
             result.llm_prompt_tokens,
             result.llm_completion_tokens,
             result.llm_total_tokens,
             result.max_prompt_tokens,
             result.elapsed_seconds,
             len(result.tool_metrics or []),
-            (
-                (sum(m.get("summary_chars", 0) for m in (result.tool_metrics or [])) / len(result.tool_metrics))
-                if result.tool_metrics
-                else 0.0
-            ),
+            avg_tool_summary_chars,
         )
 
         if config["verbose"]:
@@ -452,15 +480,35 @@ async def main():
             print(f"  - 工具调用次数: {result.execution_count}")
             print(f"  - 最后执行ID: {result.last_execution_id or 'N/A'}")
             print(f"  - 停止原因: {result.stop_reason or '正常完成'}")
-            idx_mode = 'no-index' if config['no_index'] else ('baseline' if config.get('no_fetch_tool') else 'context-mode')
             print(f"  - 索引模式: {idx_mode}")
             print(f"  - LLM tokens(prompt/completion/total): {result.llm_prompt_tokens}/{result.llm_completion_tokens}/{result.llm_total_tokens}")
             print(f"  - 最大单轮 prompt tokens: {result.max_prompt_tokens}")
             print(f"  - 总耗时(秒): {result.elapsed_seconds:.3f}")
+            # Phase 1: 新增用户体验指标
+            print(f"  - 任务成功: {result.task_success}")
+            print(f"  - 消息压缩比: {result.compression_ratio:.2%}")
+            print(f"  - fetch调用次数: {result.fetch_hit_count}")
+            print(f"  - 平均LLM延迟: {sum(result.per_round_llm_latency or [0]) / max(len(result.per_round_llm_latency or []), 1):.3f}s")
+            print(f"  - 平均工具延迟: {sum(result.per_round_tool_latency or [0]) / max(len(result.per_round_tool_latency or []), 1):.3f}s")
 
-        # 输出结构化 round_token_history（供 main.py 解析）
+        # Phase 1: 输出结构化指标（供 main.py 解析）
         import json as _json
         print(f"\nROUND_TOKEN_HISTORY_JSON:{_json.dumps(result.round_token_history or [])}")
+        _metrics = {
+            "execution_count": result.execution_count,
+            "stop_reason": result.stop_reason,
+            "elapsed_seconds": result.elapsed_seconds,
+            "llm_prompt_tokens": result.llm_prompt_tokens,
+            "llm_completion_tokens": result.llm_completion_tokens,
+            "llm_total_tokens": result.llm_total_tokens,
+            "max_prompt_tokens": result.max_prompt_tokens,
+            "task_success": result.task_success,
+            "compression_ratio": result.compression_ratio,
+            "fetch_hit_count": result.fetch_hit_count,
+            "per_round_llm_latency": result.per_round_llm_latency,
+            "per_round_tool_latency": result.per_round_tool_latency,
+        }
+        print(f"METRICS_JSON:{_json.dumps(_metrics)}")
 
         return 0
 

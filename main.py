@@ -42,6 +42,14 @@ def run_single_task(task: str, args: argparse.Namespace) -> dict:
         cmd.append("--no-fetch-tool")
     # context_mode: 不加任何 flag，使用默认 InMemoryIndexStore + fetch 工具
 
+    # Phase 2: 多模型横评 — 传递 --model / --base-url / --api-key
+    if getattr(args, "model", None):
+        cmd.extend(["--model", args.model])
+    if getattr(args, "base_url", None):
+        cmd.extend(["--base-url", args.base_url])
+    if getattr(args, "api_key", None):
+        cmd.extend(["--api-key", args.api_key])
+
     env = dict(**subprocess.os.environ)
     env["AGENT_EXECUTION_BACKEND"] = args.backend
 
@@ -56,15 +64,20 @@ def run_single_task(task: str, args: argparse.Namespace) -> dict:
     )
     elapsed = round(time.perf_counter() - started, 3)
 
-    # 从 stdout 解析 round_token_history
+    # 从 stdout 解析 round_token_history 和 metrics
     round_token_history = []
+    metrics = {}
     for line in (proc.stdout or "").splitlines():
         if line.startswith("ROUND_TOKEN_HISTORY_JSON:"):
             try:
                 round_token_history = json.loads(line[len("ROUND_TOKEN_HISTORY_JSON:"):])
             except json.JSONDecodeError:
                 pass
-            break
+        elif line.startswith("METRICS_JSON:"):
+            try:
+                metrics = json.loads(line[len("METRICS_JSON:"):])
+            except json.JSONDecodeError:
+                pass
 
     return {
         "task": task,
@@ -74,6 +87,8 @@ def run_single_task(task: str, args: argparse.Namespace) -> dict:
         "stderr": proc.stderr,
         "command": cmd,
         "round_token_history": round_token_history,
+        # Phase 1: 新增用户体验指标
+        "metrics": metrics,
     }
 
 
@@ -87,6 +102,10 @@ def main() -> None:
     parser.add_argument("--task-file", default="experiment_tasks/benchmark_tasks.txt")
     parser.add_argument("--log-file", required=True)
     parser.add_argument("--backend", choices=["pyodide", "local"], default="pyodide")
+    # Phase 2: 多模型横评参数
+    parser.add_argument("--model", type=str, default=None, help="LLM 模型名称（覆盖环境变量 LLM_MODEL）")
+    parser.add_argument("--base-url", type=str, default=None, help="LLM API 基础 URL（覆盖环境变量 LLM_BASE_URL）")
+    parser.add_argument("--api-key", type=str, default=None, help="LLM API Key（覆盖环境变量 DASHSCOPE_API_KEY）")
     args = parser.parse_args()
 
     task_file = Path(args.task_file)
@@ -110,6 +129,7 @@ def main() -> None:
         "run_started_at": run_started_at,
         "run_finished_at": datetime.now().isoformat(timespec="seconds"),
         "mode": args.mode,
+        "model": args.model or "(env default)",
         "backend": args.backend,
         "config": {
             "max_executions": args.max_executions,

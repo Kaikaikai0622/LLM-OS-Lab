@@ -44,6 +44,45 @@ print(result.stop_reason)       # 停止原因: "max_executions" | "total_timeou
 print(result.last_execution_id) # 最后执行ID
 ```
 
+### AgentBuilder (SDK Builder Pattern)
+
+通过 Builder 模式快速构建自定义 Agent，只需定义 prompt 即可：
+
+```python
+from agent import AgentBuilder, InMemoryIndexStore
+
+agent = (
+    AgentBuilder()
+    .llm(my_llm)                                    # 必需
+    .sandbox(my_sandbox)                             # 必需
+    .system_prompt("You are a data analyst...")      # 可选自定义 prompt
+    .index_store(InMemoryIndexStore())               # 可选，启用上下文压缩
+    .max_executions(10)                              # 可选
+    .total_timeout(60)                               # 可选
+    .verbose(False)                                  # 可选
+    .build()                                         # → SandboxAgent
+)
+result = await agent.run("分析数据...")
+```
+
+**Builder 方法清单**：
+
+| 方法 | 必需 | 说明 |
+|------|------|------|
+| `.llm(callable)` | ✅ | LLM 调用函数 |
+| `.sandbox(instance)` | ✅ | 沙箱实例 |
+| `.system_prompt(str)` | | 自定义 system prompt，覆盖默认 |
+| `.index_store(store)` | | 索引存储，默认 InMemoryIndexStore |
+| `.max_executions(n)` | | 最大工具执行次数，默认 10 |
+| `.total_timeout(sec)` | | 总超时（秒），默认 60 |
+| `.tool_timeout(sec)` | | 单工具超时，默认 15 |
+| `.summary_max_chars(n)` | | 摘要最大字符数，默认 2000 |
+| `.verbose(bool)` | | 诊断日志 |
+| `.has_fetch_tool(bool)` | | 是否暴露 fetch 工具 |
+| `.build()` | ✅ | 构建 SandboxAgent 实例 |
+
+**内部实现**：`SandboxAgent.__init__` 接受 `custom_system_prompt` 参数，Builder 通过该参数注入自定义 prompt。
+
 ### LangGraph StateGraph 工作流
 
 真正的 LangGraph StateGraph 管理 Agent 的多轮执行：
@@ -194,12 +233,54 @@ workflow.py 已从 `while True` 循环重构为真正的 LangGraph StateGraph：
 3. **多 tool_calls 支持**：`tool_executor` 顺序执行全部 tool_calls
 4. **标准化处理**：支持多种 tool_call 格式（LangChain / OpenAI）
 
+## 关键实现注意事项
+
+### InMemoryIndexStore 布尔判断
+
+**⚠️ Important**: `InMemoryIndexStore` 定义了 `__len__`，空存储在布尔上下文为 `False`：
+
+```python
+# 错误 - 空存储会创建新实例
+self.index_store = index_store or InMemoryIndexStore()
+
+# 正确
+self.index_store = index_store if index_store is not None else InMemoryIndexStore()
+```
+
+### LLM Tool Binding
+
+LLM 必须通过 `.bind_tools()` 绑定工具才能触发工具调用：
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import StructuredTool
+
+tool = StructuredTool.from_function(...)
+
+llm = ChatOpenAI(
+    model="qwen-plus",
+    api_key=api_key,
+    base_url="https://dashscope.aliyun.com/compatible-mode/v1",
+).bind_tools([tool])  # 必须绑定工具
+```
+
+### FixedPyodideSandbox
+
+必须使用 `FixedPyodideSandbox` 修复 `@langchain/pyodide-sandbox` 的 stdout 换行丢失问题：
+
+```python
+from sandbox_wrapper import FixedPyodideSandbox
+
+sandbox = FixedPyodideSandbox(allow_net=True)
+```
+
 ## 文件清单
 
 - `agent/agent.py` - SandboxAgent 主类
+- `agent/builder.py` - AgentBuilder SDK Builder Pattern
 - `agent/workflow.py` - LangGraph 工作流定义
 - `agent/tools.py` - 沙箱工具实现
 - `agent/index_store.py` - 索引存储系统
 - `agent/schemas.py` - 数据模型定义
 - `agent/prompts.py` - 提示词模板
-- `agent/__main__.py` - CLI 入口
+- `agent/__main__.py` - CLI 入口（支持 --model/--base-url/--api-key）

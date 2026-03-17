@@ -22,6 +22,7 @@ from agent.tools import (
     read_workspace_file,
     write_workspace_file,
     ExecutePythonConfig,
+    get_fetch_execution_detail_call_count,
 )
 
 
@@ -297,17 +298,34 @@ class AgentWorkflow:
             llm_messages = llm_messages + [SystemMessage(content=max_exec_message)]
 
         # 压缩旧 ToolMessage（仅影响 LLM 输入，不影响 state）
+        compressed_message_count = 0
         if self.config.compress_old_messages:
+            original_llm_messages = llm_messages
             llm_messages = self._compress_message_history(
                 llm_messages, self.config.max_tool_messages_in_context
             )
+            # 计算被压缩的消息数量
+            if len(original_llm_messages) == len(llm_messages):
+                compressed_message_count = sum(
+                    1 for m in llm_messages
+                    if isinstance(m, ToolMessage) and "[Compressed]" in m.content
+                )
 
         # 注入执行历史摘要（Context Mode 且有记录时）
         if self.index_store is not None and len(self.index_store) > 0:
             llm_messages = self._inject_history_summary(llm_messages)
 
+        # Phase 1: 计时 LLM 调用
+        llm_start_time = time.perf_counter()
+
         # 调用 LLM（使用压缩后的输入）
         raw_response = self.llm(llm_messages)
+
+        # Phase 1: 记录 LLM 调用耗时
+        llm_latency = time.perf_counter() - llm_start_time
+        per_round_llm_latency = list(state.get("per_round_llm_latency") or [])
+        per_round_llm_latency.append(round(llm_latency, 4))
+
         round_prompt_tokens, round_completion_tokens, round_total_tokens = _extract_token_usage(raw_response)
         response = _normalize_ai_message(raw_response)
 
@@ -334,6 +352,7 @@ class AgentWorkflow:
                 f"  -> tokens round(prompt={round_prompt_tokens}, completion={round_completion_tokens}, total={round_total_tokens}) "
                 f"cum(total={llm_total_tokens})"
             )
+            print(f"  -> llm_latency={llm_latency:.3f}s")
 
         # 返回更新后的状态
         return {
@@ -344,6 +363,8 @@ class AgentWorkflow:
             "llm_total_tokens": llm_total_tokens,
             "max_prompt_tokens": max_prompt_tokens,
             "round_token_history": round_token_history,
+            "per_round_llm_latency": per_round_llm_latency,
+            "last_compressed_message_count": compressed_message_count,
         }
 
     async def _tool_executor(self, state: AgentState) -> AgentState:
@@ -379,6 +400,9 @@ class AgentWorkflow:
             default_timeout=tool_timeout_seconds,
             summary_max_chars=summary_max_chars,
         )
+
+        # Phase 1: 工具执行计时
+        tool_start_time = time.perf_counter()
 
         for tool_call in tool_calls:
             # 解析 tool_call
@@ -488,12 +512,26 @@ class AgentWorkflow:
             execution_count += 1
             last_execution_id = tool_result.execution_id
 
+        # Phase 1: 计算本轮工具执行总耗时
+        tool_latency = time.perf_counter() - tool_start_time
+        per_round_tool_latency = list(state.get("per_round_tool_latency") or [])
+        per_round_tool_latency.append(round(tool_latency, 4))
+
+        # Phase 1: 计算压缩比（压缩后消息长度 / 原始消息长度）
+        compression_ratio = state.get("compression_ratio", 0.0)
+        last_compressed_count = state.get("last_compressed_message_count", 0)
+        if last_compressed_count > 0 and len(messages) > 0:
+            # 压缩比 = 被压缩的消息数 / 总消息数
+            compression_ratio = round(last_compressed_count / len(messages), 4)
+
         return {
             **state,
             "messages": new_messages,
             "execution_count": execution_count,
             "last_execution_id": last_execution_id,
             "tool_metrics": tool_metrics,
+            "per_round_tool_latency": per_round_tool_latency,
+            "compression_ratio": compression_ratio,
         }
 
     def _check_timeout(self, state: AgentState) -> bool:
@@ -591,11 +629,15 @@ class AgentWorkflow:
         started_at = state.get("started_at")
         elapsed_seconds = (time.monotonic() - started_at) if started_at is not None else 0.0
 
+        # Phase 1: 获取 fetch_execution_detail 调用计数
+        fetch_hit_count = get_fetch_execution_detail_call_count()
+
         return {
             **state,
             "final_answer": final_answer,
             "stop_reason": stop_reason,
             "elapsed_seconds": elapsed_seconds,
+            "fetch_hit_count": fetch_hit_count,
         }
 
     async def invoke(self, state: AgentState) -> AgentState:
